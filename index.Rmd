@@ -1,0 +1,271 @@
+---
+title: Data exploration of wind farm monitoring datasets in OBIS
+date: "`r Sys.Date()`"
+author: Pieter Provoost
+output: (function(...) {
+  rmdformats::robobook(toc_depth = 4, pandoc_args = c("+RTS", "-K2000m", "-RTS"), ...) })
+editor_options: 
+  chunk_output_type: console
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "docs") })  
+---
+
+In this notebook we explore data in OBIS from monitoring datasets associated with wind farms in the Belgian and Dutch EEZs. All data used here are loaded directly from the OBIS database using the [robis](https://github.com/iobis/robis) R package.
+
+# Monitoring of the effects of Belgian wind mill parks on benthic macro-invertebrates and the fish fauna of soft substrates - reference situation
+
+This section of the notebook provides an initial data exploration of the [Monitoring of the effects of Belgian wind mill parks on benthic macro-invertebrates and the fish fauna of soft substrates - reference situation](https://obis.org/dataset/4b6cd9a9-a8eb-41dd-a08f-3283a2bed347) dataset.
+
+## Abstract
+
+This dataset has been created to establish the reference situation of benthic macro-invertebrates (macro-, endobenthos en macro-epibenthos) and demersal fish in the Belgian windfarm area.
+
+## Dependencies
+
+```{r message=FALSE, warning=FALSE}
+library(robis)
+library(dplyr)
+library(sf)
+library(mapview)
+library(ggplot2)
+library(wesanderson)
+library(rmarkdown)
+library(scales)
+```
+
+## Load OBIS data
+
+Load OBIS data using `robis` and include measurements and facts data.
+
+```{r message=FALSE, warning=FALSE}
+occ <- occurrence(datasetid = "4b6cd9a9-a8eb-41dd-a08f-3283a2bed347", extensions = "MeasurementOrFact") %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
+```
+
+## Load wind farm shapefile
+
+Load a shapefile of the Belgian wind farms as well as the adjacant wind farms in the Dutch EEZ.
+
+```{r message=FALSE, warning=FALSE}
+windfarms <- st_read("shapefiles/belgium/EMODnet_HA_WindFarms_pg_20211210.shp", options = "ENCODING=UTF-8", quiet = TRUE)
+mapviewOptions(fgb = FALSE)
+mapview(windfarms)@map
+```
+
+## Create a map
+
+```{r message=FALSE, warning=FALSE}
+land <- st_read("shapefiles/land.gpkg", options = "ENCODING=UTF-8")
+
+p <- ggplot() +
+  geom_sf(data = land, size = 0.5, fill = NA) +
+  geom_sf(data = windfarms, aes(fill = COUNTRY), show.legend = FALSE, color = NA, alpha = 0.5) +
+  geom_sf(data = occ, size = 0.1) +
+  scale_fill_manual(values = rev(wes_palette("Zissou1", n = 2))) +
+  coord_sf(xlim = c(2.2, 3.6), ylim = c(51.1, 51.8), default_crs = sf::st_crs(4326)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+p
+```
+
+By year:
+
+```{r message=FALSE, warning=FALSE}
+p +
+  facet_wrap(~year, nrow = 2)
+```
+
+## Taxonomic composition
+
+```{r message=FALSE, warning=FALSE}
+occ %>%
+  as.data.frame() %>%
+  group_by(class, order) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+## Measurements
+
+This dataset makes use of the (Extended)MeasurementOrFact extension. Let's extract the measurements into a separate data frame and look at some measurement type statistics.
+
+```{r message=FALSE, warning=FALSE}
+measurements <- occ %>%
+  unnest_extension("MeasurementOrFact", fields = c("decimalLongitude", "decimalLatitude", "class", "species", "year", "eventID", "parentEventID")) %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+
+measurements %>%
+  as.data.frame() %>%
+  group_by(measurementType, measurementUnit) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+Let's take a look at the biomass values.
+
+```{r message=FALSE, warning=FALSE}
+biomass <- measurements %>%
+  filter(measurementType == "Biomass") %>%
+  mutate(measurementValue = as.numeric(measurementValue))
+
+biomass %>%
+  as.data.frame() %>%
+  group_by(class) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+Now create maps of polychaete biomass values:
+
+```{r message=FALSE, warning=FALSE}
+biomass_pol <- biomass %>%
+  filter(class == "Polychaeta") %>%
+  group_by(eventID) %>%
+  summarize(measurementValue = sum(measurementValue))
+
+ggplot() +
+  geom_sf(data = windfarms, aes(fill = COUNTRY), show.legend = FALSE, color = NA, alpha = 0.5) +
+  geom_sf(data = biomass_pol, aes(size = measurementValue), shape = 21) +
+  scale_fill_manual(values = rev(wes_palette("Zissou1", n = 2))) +
+  scale_size_continuous(name = "Polychaete biomass\n(mg AFDW/m2)") +
+  coord_sf(xlim = c(2.75, 3.1), ylim = c(51.43, 51.59), default_crs = sf::st_crs(4326)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Polychaete biomass")
+```
+
+And crustaceans:
+
+```{r message=FALSE, warning=FALSE}
+biomass_cru <- biomass %>%
+  filter(class == "Malacostraca") %>%
+  group_by(eventID) %>%
+  summarize(measurementValue = sum(measurementValue))
+
+ggplot() +
+  geom_sf(data = windfarms, aes(fill = COUNTRY), show.legend = FALSE, color = NA, alpha = 0.5) +
+  geom_sf(data = biomass_cru, aes(size = measurementValue), shape = 21) +
+  scale_fill_manual(values = rev(wes_palette("Zissou1", n = 2))) +
+  scale_size_continuous(name = "Polychaete biomass\n(mg AFDW/m2)") +
+  coord_sf(xlim = c(2.75, 3.1), ylim = c(51.43, 51.59), default_crs = sf::st_crs(4326)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  ggtitle("Crustacean biomass")
+```
+
+# Fish community surveys for the Monitoring and Evaluation Programme of the North Sea OWEZ wind park between 2003 and 2011
+
+This section of the notebook provides an initial data exploration of the [Fish community surveys for the Monitoring and Evaluation Programme of the North Sea OWEZ wind park between 2003 and 2011](https://obis.org/dataset/9c27b24d-e80f-4624-8f73-628b8fd7cb43) dataset.
+
+## Abstract
+
+In 2006, the first Dutch offshore wind farm was built 10-19 km from the shore of Egmond aan Zee. A monitoring and evalulation program accompanied the plans for the construction and exploitation of this farm. This dataset focusses on the monitoring and evaluation of potential ecological consequences in the Dutch coastal zone related to this farm for the fish community. Monitoring was executed prior to the construction of the farm (2003/2004), one year after (2007/2008) and five years after (2011). Surveys were preformed with beam trawls, pelagic nets and gillnets to study both benthic and pelagic fish communities. The monitoring is directed and the dataset is maintained by Wagening Marine Research, previously IMARES, located at Wageningen, the Netherlands. Publication of the dataset has been facilitated by Deltares, The Netherlands.
+
+## Load OBIS data
+
+```{r message=FALSE, warning=FALSE}
+occ <- occurrence(datasetid = "9c27b24d-e80f-4624-8f73-628b8fd7cb43", extensions = "MeasurementOrFact") %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
+```
+
+## Load wind farm shapefile
+
+Load a shapefile of the NSW Offshore windpark Egmond aan Zee, as well as the adjacant wind farms in the Dutch EEZ.
+
+```{r message=FALSE, warning=FALSE}
+windfarms <- st_read("shapefiles/netherlands/EMODnet_HA_WindFarms_pg_20211210.shp", options = "ENCODING=UTF-8", quiet = TRUE) %>%
+  mutate(NAME = ifelse(NAME == "NSW Offshore windpark Egmond aan Zee", "OWEZ", "other"))
+mapviewOptions(fgb = FALSE)
+mapview(windfarms)@map
+```
+
+## Create a map
+
+```{r message=FALSE, warning=FALSE}
+p <- ggplot() +
+  geom_sf(data = land, size = 0.5, fill = NA) +
+  geom_sf(data = windfarms, aes(fill = NAME), show.legend = FALSE, color = NA, alpha = 0.5) +
+  geom_sf(data = occ, size = 0.1) +
+  scale_fill_manual(values = rev(wes_palette("Zissou1", n = 2))) +
+  coord_sf(xlim = c(3, 5), ylim = c(52, 52.9), default_crs = sf::st_crs(4326)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+p
+```
+
+By year:
+
+```{r message=FALSE, warning=FALSE}
+p +
+  facet_wrap(~year, nrow = 2)
+```
+
+## Taxonomic composition
+
+```{r message=FALSE, warning=FALSE}
+occ %>%
+  as.data.frame() %>%
+  group_by(class, order) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+## Measurements
+
+This dataset makes use of the (Extended)MeasurementOrFact extension. Let's extract the measurements into a separate data frame and look at some measurement type statistics.
+
+```{r message=FALSE, warning=FALSE}
+measurements <- occ %>%
+  unnest_extension("MeasurementOrFact", fields = c("decimalLongitude", "decimalLatitude", "class", "species", "year", "eventID")) %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+
+measurements %>%
+  as.data.frame() %>%
+  group_by(measurementType, measurementUnit) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+Let's dive a bit deeper into the length measurements.
+
+```{r message=FALSE, warning=FALSE}
+length <- measurements %>%
+  filter(measurementType == "Length of biological entity specified elsewhere") %>%
+  mutate(measurementValue = as.numeric(measurementValue))
+
+length %>%
+  as.data.frame() %>%
+  group_by(class) %>%
+  summarize(records = n()) %>%
+  arrange(desc(records)) %>%
+  rmarkdown::paged_table()
+```
+
+We will keep only fish lengtyh measurements and work with that.
+
+```{r message=FALSE, warning=FALSE}
+Rlength <- length %>%
+  filter(class == "Actinopteri")
+
+ggplot() +
+  geom_jitter(data = length, aes(as.numeric(year), measurementValue), size = 0.3, width = 0.3, height = 0.005) +
+  scale_x_continuous(breaks= pretty_breaks()) +
+  xlab("Year") +
+  ylab("Fish length (m)")
+```
+
+Now do this for just two species: Atlantic herring and Whiting.
+
+```{r message=FALSE, warning=FALSE}
+length_sp <- length %>%
+  filter(species %in% c("Clupea harengus", "Merlangius merlangus"))
+
+ggplot() +
+  geom_jitter(data = length_sp, aes(as.numeric(year), measurementValue, color = species), size = 0.3, width = 0.3, height = 0.005) +
+  scale_color_manual(values = c("#d1495b", "#edae49")) +
+  scale_x_continuous(breaks= pretty_breaks()) +
+  xlab("Year") +
+  ylab("Fish length (m)")
+```
+
